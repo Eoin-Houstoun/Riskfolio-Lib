@@ -13,8 +13,9 @@ How it stays honest:
   caching across repeats). The headline clock runs from spawning the worker to
   reading "ARTEMIS_DONE <nonce>" back, so work moved into import time counts;
   the nonce-to-done call alone is reported too. Saving outputs is outside.
-- The golden weights are compared from a private read-only copy, and the
-  harness, its data, the golden files and the venv must be unchanged after the run.
+- The golden weights are read into this process's memory before any worker
+  starts, and the harness, its data, the golden files and the venv's content
+  hash must be unchanged after the run.
 - CPU over wall is read from the child's own /proc counters (threads and reaped
   children) across the timed call.
 - One untimed warm-up repeat first, then the median of BENCH_REPEATS (5).
@@ -48,7 +49,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["MPLBACKEND"] = "Agg"
 
-from compare import compare, drop_private, harness_digest, private_golden, venv_unchanged  # noqa: E402
+from compare import compare, harness_digest, load_golden, venv_manifest  # noqa: E402
 from gate import is_seed  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "bench")
@@ -103,11 +104,15 @@ def run_once(outdir):
     if t1 is None:
         sys.exit("bench: worker ended without finishing the timed call")
     p.stdout.read()
-    _, status, _ = os.wait4(p.pid, 0)
+    _, status, ru = os.wait4(p.pid, 0)
+    life = time.perf_counter() - spawn
     if os.waitstatus_to_exitcode(status) != 0:
         sys.exit("bench: worker exited %d" % os.waitstatus_to_exitcode(status))
-    # Clock ticks are 10 ms, so a call under 0.5 s can't be judged; it then reports 0.
-    ratio = (c1 - c0) / (t1 - t0) if t1 - t0 > 0.5 else 0.0
+    # Both windows count: the whole child lifetime (rusage includes reaped children) always,
+    # and the timed call when it is long enough for 10 ms clock ticks to judge it.
+    ratio = (ru.ru_utime + ru.ru_stime) / life
+    if t1 - t0 > 0.5:
+        ratio = max(ratio, (c1 - c0) / (t1 - t0))
     return t1 - spawn, t1 - t0, ratio
 
 
@@ -117,53 +122,48 @@ def main():
         sys.exit("bench --record: riskfolio/src is not the seed; refusing")
 
     before = repo_files()
-    digest = harness_digest()
-    golden = None if record else private_golden(GOLDEN)
+    digest, venv = harness_digest(), venv_manifest()
+    golden = None if record else load_golden(GOLDEN)
     rng = np.random.default_rng(20261116)
     canary_m = rng.standard_normal((700, 700))
     canary_m = canary_m @ canary_m.T
     scipy.linalg.eigh(canary_m, eigvals_only=True)  # warm-up
 
     totals, calls, canary, worst_ratio = [], [], [], 0.0
-    try:
-        for rep in range(1 if record else REPEATS + 1):
-            out = tempfile.mkdtemp(prefix="rfbench-")
-            try:
-                total, call, ratio = run_once(out)
-                if record:
-                    shutil.rmtree(GOLDEN, ignore_errors=True)
-                    shutil.copytree(out, GOLDEN)
-                    continue
-                fails = compare("hrp", golden, out)
-                if fails:
-                    for f in fails:
-                        print("FAIL", f, file=sys.stderr)
-                    sys.exit("bench: result is wrong; not timing a wrong answer")
-            finally:
-                shutil.rmtree(out, ignore_errors=True)
-            if ratio > MAX_CPU_WALL:
-                sys.exit("bench: child cpu/wall %.2f > %.2f in the timed call; the benchmark is "
-                         "single-threaded" % (ratio, MAX_CPU_WALL))
-            if rep == 0:
-                continue  # warm-up: checked, not timed
-            worst_ratio = max(worst_ratio, ratio)
-            totals.append(total)
-            calls.append(call)
-            c0 = time.perf_counter()
-            scipy.linalg.eigh(canary_m, eigvals_only=True)
-            canary.append(time.perf_counter() - c0)
-    finally:
-        if golden:
-            drop_private(golden)
+    for rep in range(1 if record else REPEATS + 1):
+        out = tempfile.mkdtemp(prefix="rfbench-")
+        try:
+            total, call, ratio = run_once(out)
+            if record:
+                shutil.rmtree(GOLDEN, ignore_errors=True)
+                shutil.copytree(out, GOLDEN)
+                continue
+            fails = compare("hrp", golden, out)
+            if fails:
+                for f in fails:
+                    print("FAIL", f, file=sys.stderr)
+                sys.exit("bench: result is wrong; not timing a wrong answer")
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+        if ratio > MAX_CPU_WALL:
+            sys.exit("bench: child cpu/wall %.2f > %.2f in the timed call; the benchmark is "
+                     "single-threaded" % (ratio, MAX_CPU_WALL))
+        if rep == 0:
+            continue  # warm-up: checked, not timed
+        worst_ratio = max(worst_ratio, ratio)
+        totals.append(total)
+        calls.append(call)
+        c0 = time.perf_counter()
+        scipy.linalg.eigh(canary_m, eigvals_only=True)
+        canary.append(time.perf_counter() - c0)
 
     if record:
         print("recorded", sorted(os.listdir(GOLDEN)))
         return 0
     if harness_digest() != digest:
         sys.exit("bench: the harness or its golden data changed during the run")
-    ok, why = venv_unchanged()
-    if not ok:
-        sys.exit("bench: the benchmark venv changed during the run: %s" % why)
+    if venv_manifest() != venv:
+        sys.exit("bench: the benchmark venv changed during the run")
     new = repo_files() - before - {os.path.join(ROOT, "artemis_results.json")}
     if new:
         sys.exit("bench: new files appeared in the repository: %s" % sorted(new)[:5])

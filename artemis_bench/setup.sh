@@ -18,9 +18,12 @@ astropy==8.0.2 astropy-iers-data==0.2026.10.19.0.52.1 matplotlib==3.11.2 pybind1
 setuptools==84.2.1 pytest==9.2.0"
 
 manifest() {
-    # content hash of every file under the venv, minus the manifest itself
-    (cd "$VENV" && find . -path ./.manifest -prune -o -type f -print0 | LC_ALL=C sort -z \
-        | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+    # content hash of every file, plus every symlink and its target, under the venv (minus the
+    # manifest itself); POSIX tools only, never the venv's own interpreter
+    (cd "$VENV" && {
+        find . -path ./.manifest -prune -o -type f -exec sha256sum {} +
+        find . -type l -exec sh -c 'for l; do printf "L %s -> %s\n" "$l" "$(readlink "$l")"; done' _ {} +
+    } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
 }
 
 check() {
@@ -40,8 +43,14 @@ print("ok " + " ".join("%s %s" % kv for kv in have.items()))
 EOF
 }
 
+if [ "${1:-}" = "--manifest" ]; then
+    # gate.py and bench.py record this before a run and compare it after
+    manifest
+    exit 0
+fi
+
 if [ "${1:-}" = "--check" ]; then
-    # gate.py and bench.py call this after their runs: did code under test change the venv?
+    # the venv matches its manifest and its pinned versions
     check
     exit $?
 fi
