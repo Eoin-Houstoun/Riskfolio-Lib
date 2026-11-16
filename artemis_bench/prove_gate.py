@@ -8,8 +8,10 @@ the original bytes afterwards (also on error).
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -42,6 +44,12 @@ FAULTS = {
     "lower triangle not filled": first("        mat[j, i] = mat[i, j]\n", ""),
     "child patches numpy + wrong cache key": both(
         WRONG_CACHE_KEY, lambda s: s + "\nnp.nanmax = lambda *a, **k: 0.0\nnp.abs = lambda x: x * 0\n"),
+    "child edits golden + wrong cache key": both(
+        WRONG_CACHE_KEY, lambda s: s + (
+            "\nimport glob as _g, os as _o\n"
+            "for _f in _g.glob(_o.path.join(_o.path.dirname(__file__), '..', '..', 'artemis_bench',"
+            " 'golden', 'gate', '*.npz')):\n"
+            "    _o.chmod(_f, 0o644); open(_f, 'ab').write(b'x')\n")),
 }
 REPO_CACHE = first(
     "def mutual_info_matrix(X, bins_info=\"KN\", normalize=True):\n",
@@ -65,6 +73,9 @@ def first_fail(lines):
 def main():
     with open(AUX) as fh:
         seed = fh.read()
+    golden_dir = os.path.join(HERE, "golden")
+    golden_backup = os.path.join(tempfile.mkdtemp(prefix="rfprove-"), "golden")
+    shutil.copytree(golden_dir, golden_backup)
     ok = True
     try:
         rc, out = run("gate.py")
@@ -78,6 +89,8 @@ def main():
             print("gate  fault %-34s %s  %s" % (name, "CAUGHT" if rc else "MISSED", first_fail(out)[:80]))
             with open(AUX, "w") as fh:
                 fh.write(seed)
+            shutil.rmtree(golden_dir)
+            shutil.copytree(golden_backup, golden_dir)
 
         if "--bench" in sys.argv:
             one = {"BENCH_REPEATS": "1"}
@@ -103,6 +116,9 @@ def main():
     finally:
         with open(AUX, "w") as fh:
             fh.write(seed)
+        shutil.rmtree(golden_dir, ignore_errors=True)
+        shutil.copytree(golden_backup, golden_dir)
+        shutil.rmtree(os.path.dirname(golden_backup), ignore_errors=True)
     print("ALL AS EXPECTED" if ok else "SOMETHING UNEXPECTED")
     return 0 if ok else 1
 

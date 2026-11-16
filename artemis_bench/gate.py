@@ -23,7 +23,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
-from compare import compare  # noqa: E402
+from compare import compare, drop_private, harness_digest, private_golden, venv_unchanged  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "gate")
 SEED_SHA256 = {
@@ -50,10 +50,13 @@ def run_worker(outdir):
 
 
 def main():
+    record = "--record" in sys.argv
+    digest = harness_digest()
+    golden = None if record else private_golden(GOLDEN)
     out = tempfile.mkdtemp(prefix="rfgate-")
     try:
         run_worker(out)
-        if "--record" in sys.argv:
+        if record:
             if not is_seed():
                 sys.exit("gate --record: riskfolio/src is not the seed; refusing")
             errs = [f for f in os.listdir(out) if f.endswith(".err")]
@@ -63,10 +66,15 @@ def main():
             shutil.copytree(out, GOLDEN)
             print("recorded %d files into %s" % (len(os.listdir(GOLDEN)), GOLDEN))
             return 0
-        names = sorted(f[:-len(".meta.json")] for f in os.listdir(GOLDEN) if f.endswith(".meta.json"))
+        names = sorted(f[:-len(".meta.json")] for f in os.listdir(golden) if f.endswith(".meta.json"))
         fails = []
         for name in names:
-            fails += compare(name, GOLDEN, out)
+            fails += compare(name, golden, out)
+        if harness_digest() != digest:
+            fails.append("the harness or its golden data changed during the run")
+        ok, why = venv_unchanged()
+        if not ok:
+            fails.append("the benchmark venv changed during the run: %s" % why)
         for f in fails:
             print("FAIL", f, file=sys.stderr)
         print("gate: %d cases, %d failures" % (len(names), len(fails)))
@@ -74,6 +82,8 @@ def main():
             return 1
     finally:
         shutil.rmtree(out, ignore_errors=True)
+        if golden:
+            drop_private(golden)
     t = subprocess.run([sys.executable, "-m", "pytest", *REPO_TESTS], cwd=ROOT,
                        capture_output=True, text=True, timeout=1800,
                        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", MPLBACKEND="Agg"))

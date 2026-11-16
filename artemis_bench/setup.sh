@@ -18,7 +18,9 @@ astropy==8.0.2 astropy-iers-data==0.2026.10.19.0.52.1 matplotlib==3.11.2 pybind1
 setuptools==84.2.1 pytest==9.2.0"
 
 manifest() {
-    (cd "$VENV" && find . -path ./.manifest -prune -o -type f -printf '%p %s %T@\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
+    # content hash of every file under the venv, minus the manifest itself
+    (cd "$VENV" && find . -path ./.manifest -prune -o -type f -print0 | LC_ALL=C sort -z \
+        | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
 }
 
 check() {
@@ -37,6 +39,12 @@ if bad:
 print("ok " + " ".join("%s %s" % kv for kv in have.items()))
 EOF
 }
+
+if [ "${1:-}" = "--check" ]; then
+    # gate.py and bench.py call this after their runs: did code under test change the venv?
+    check
+    exit $?
+fi
 
 if [ "${1:-}" != "--force" ] && [ -x "$VENV/bin/python" ] && check >/dev/null 2>&1; then
     check

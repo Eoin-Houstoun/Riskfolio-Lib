@@ -10,8 +10,13 @@ of it is spent recomputing knuth_bin_width for every asset pair.
 How it stays honest:
 - This process never imports riskfolio, so code under test cannot patch its
   clock or its checks. Each repeat runs worker.py in a fresh process (no
-  caching across repeats); the clock here runs from sending a nonce to reading
-  "ARTEMIS_DONE <nonce>" back. Loading inputs and saving outputs are outside.
+  caching across repeats). The headline clock runs from spawning the worker to
+  reading "ARTEMIS_DONE <nonce>" back, so work moved into import time counts;
+  the nonce-to-done call alone is reported too. Saving outputs is outside.
+- The golden weights are compared from a private read-only copy, and the
+  harness, its data, the golden files and the venv must be unchanged after the run.
+- CPU over wall is read from the child's own /proc counters (threads and reaped
+  children) across the timed call.
 - One untimed warm-up repeat first, then the median of BENCH_REPEATS (5).
 - Every repeat's weights are compared with golden weights recorded from the seed.
 - Single-threaded: each child's CPU time over its wall time must stay under 1.3.
@@ -43,7 +48,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["MPLBACKEND"] = "Agg"
 
-from compare import compare  # noqa: E402
+from compare import compare, drop_private, harness_digest, private_golden, venv_unchanged  # noqa: E402
 from gate import is_seed  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "bench")
@@ -59,8 +64,18 @@ def repo_files():
     return seen
 
 
+def cpu_ticks(pid):
+    """utime+stime of the child and its reaped children, all threads (from /proc/<pid>/stat)."""
+    with open("/proc/%d/stat" % pid) as fh:
+        fields = fh.read().rsplit(")", 1)[1].split()
+    return sum(int(x) for x in fields[11:15]) / os.sysconf("SC_CLK_TCK")
+
+
 def run_once(outdir):
-    """One fresh child: returns (timed seconds, child cpu/wall)."""
+    """One fresh child: returns (spawn-to-done seconds, timed-call seconds, cpu/wall in the call).
+
+    The headline is spawn to done, so work moved into import time is counted; the nonce
+    window is reported too."""
     # HOME and caches point into this repeat's own folder, deleted after it, so nothing
     # written by one repeat (a results cache under ~/.cache, say) can speed up the next.
     env = dict(os.environ, TMPDIR=outdir, HOME=outdir, XDG_CACHE_HOME=outdir,
@@ -75,21 +90,25 @@ def run_once(outdir):
     else:
         sys.exit("bench: worker never became ready")
     nonce = secrets.token_hex(16)
+    c0 = cpu_ticks(p.pid)
     t0 = time.perf_counter()
     p.stdin.write(nonce + "\n")
     p.stdin.flush()
-    t1 = None
+    t1 = c1 = None
     for line in p.stdout:
         if line.strip() == "ARTEMIS_DONE " + nonce:
             t1 = time.perf_counter()
+            c1 = cpu_ticks(p.pid)
             break
     if t1 is None:
         sys.exit("bench: worker ended without finishing the timed call")
     p.stdout.read()
-    _, status, ru = os.wait4(p.pid, 0)
+    _, status, _ = os.wait4(p.pid, 0)
     if os.waitstatus_to_exitcode(status) != 0:
         sys.exit("bench: worker exited %d" % os.waitstatus_to_exitcode(status))
-    return t1 - t0, (ru.ru_utime + ru.ru_stime) / (time.perf_counter() - spawn)
+    # Clock ticks are 10 ms, so a call under 0.5 s can't be judged; it then reports 0.
+    ratio = (c1 - c0) / (t1 - t0) if t1 - t0 > 0.5 else 0.0
+    return t1 - spawn, t1 - t0, ratio
 
 
 def main():
@@ -98,41 +117,53 @@ def main():
         sys.exit("bench --record: riskfolio/src is not the seed; refusing")
 
     before = repo_files()
+    digest = harness_digest()
+    golden = None if record else private_golden(GOLDEN)
     rng = np.random.default_rng(20261116)
     canary_m = rng.standard_normal((700, 700))
     canary_m = canary_m @ canary_m.T
     scipy.linalg.eigh(canary_m, eigvals_only=True)  # warm-up
 
-    times, canary, worst_ratio = [], [], 0.0
-    for rep in range(1 if record else REPEATS + 1):
-        out = tempfile.mkdtemp(prefix="rfbench-")
-        try:
-            t, ratio = run_once(out)
-            if record:
-                shutil.rmtree(GOLDEN, ignore_errors=True)
-                shutil.copytree(out, GOLDEN)
-                continue
-            fails = compare("hrp", GOLDEN, out)
-            if fails:
-                for f in fails:
-                    print("FAIL", f, file=sys.stderr)
-                sys.exit("bench: result is wrong; not timing a wrong answer")
-        finally:
-            shutil.rmtree(out, ignore_errors=True)
-        if ratio > MAX_CPU_WALL:
-            sys.exit("bench: child cpu/wall %.2f > %.2f; the benchmark is single-threaded"
-                     % (ratio, MAX_CPU_WALL))
-        if rep == 0:
-            continue  # warm-up: checked, not timed
-        worst_ratio = max(worst_ratio, ratio)
-        times.append(t)
-        c0 = time.perf_counter()
-        scipy.linalg.eigh(canary_m, eigvals_only=True)
-        canary.append(time.perf_counter() - c0)
+    totals, calls, canary, worst_ratio = [], [], [], 0.0
+    try:
+        for rep in range(1 if record else REPEATS + 1):
+            out = tempfile.mkdtemp(prefix="rfbench-")
+            try:
+                total, call, ratio = run_once(out)
+                if record:
+                    shutil.rmtree(GOLDEN, ignore_errors=True)
+                    shutil.copytree(out, GOLDEN)
+                    continue
+                fails = compare("hrp", golden, out)
+                if fails:
+                    for f in fails:
+                        print("FAIL", f, file=sys.stderr)
+                    sys.exit("bench: result is wrong; not timing a wrong answer")
+            finally:
+                shutil.rmtree(out, ignore_errors=True)
+            if ratio > MAX_CPU_WALL:
+                sys.exit("bench: child cpu/wall %.2f > %.2f in the timed call; the benchmark is "
+                         "single-threaded" % (ratio, MAX_CPU_WALL))
+            if rep == 0:
+                continue  # warm-up: checked, not timed
+            worst_ratio = max(worst_ratio, ratio)
+            totals.append(total)
+            calls.append(call)
+            c0 = time.perf_counter()
+            scipy.linalg.eigh(canary_m, eigvals_only=True)
+            canary.append(time.perf_counter() - c0)
+    finally:
+        if golden:
+            drop_private(golden)
 
     if record:
         print("recorded", sorted(os.listdir(GOLDEN)))
         return 0
+    if harness_digest() != digest:
+        sys.exit("bench: the harness or its golden data changed during the run")
+    ok, why = venv_unchanged()
+    if not ok:
+        sys.exit("bench: the benchmark venv changed during the run: %s" % why)
     new = repo_files() - before - {os.path.join(ROOT, "artemis_results.json")}
     if new:
         sys.exit("bench: new files appeared in the repository: %s" % sorted(new)[:5])
@@ -140,12 +171,14 @@ def main():
     def cv(xs):
         return statistics.stdev(xs) / statistics.mean(xs) if len(xs) > 1 else 0.0
 
-    print("per-repeat hrp    %s" % " ".join("%.3f" % x for x in times), file=sys.stderr)
+    print("per-repeat total  %s" % " ".join("%.3f" % x for x in totals), file=sys.stderr)
+    print("per-repeat call   %s" % " ".join("%.3f" % x for x in calls), file=sys.stderr)
     print("per-repeat canary %s" % " ".join("%.4f" % x for x in canary), file=sys.stderr)
     res = {
-        "hrp_mutual_info_50_assets_s": statistics.median(times),
+        "hrp_mutual_info_50_assets_s": statistics.median(totals),
+        "hrp_call_only_s": statistics.median(calls),
         "canary_eigh_s": statistics.median(canary),
-        "hrp_mutual_info_50_assets_cv": cv(times),
+        "hrp_mutual_info_50_assets_cv": cv(totals),
         "canary_eigh_cv": cv(canary),
         "max_child_cpu_over_wall": worst_ratio,
     }
