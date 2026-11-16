@@ -23,7 +23,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
-from compare import compare, harness_digest, load_golden, venv_state  # noqa: E402
+from compare import compare, harness_digest, limit_worker_memory, load_golden, venv_state  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "gate")
 SEED_SHA256 = {
@@ -43,7 +43,8 @@ def is_seed():
 
 def run_worker(outdir):
     r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "worker.py"), "gate", outdir],
-                       cwd=outdir, capture_output=True, text=True, timeout=1200)
+                       cwd=outdir, capture_output=True, text=True, timeout=1200,
+                       preexec_fn=limit_worker_memory)
     if r.returncode != 0:
         sys.stderr.write(r.stderr[-3000:])
         sys.exit("gate: worker exited %d" % r.returncode)

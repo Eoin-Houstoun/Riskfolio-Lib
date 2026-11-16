@@ -59,7 +59,10 @@ def gate_cases():
     syn20 = synthetic(20, 1000)
     rep = repo_returns()
     # Matrices: every binning rule, both normalisations, DataFrame and ndarray input.
-    for b in ("KN", "FD", "SC", "HGR", 10, np.int32(7)):
+    # Not HGR: on the diagonal the seed tests corr == 1, np.corrcoef of a column with itself
+    # gives 0.9999999999999999 for two of these assets, and the seed then asks histogram2d
+    # for 72,200 x 72,200 bins (about 42 GB). The seed itself cannot run it on this data.
+    for b in ("KN", "FD", "SC", 10, np.int32(7)):
         tag = b if isinstance(b, str) else "int%d" % int(b)
         yield "mi_repo_%s" % tag, lambda b=b: af.mutual_info_matrix(rep, bins_info=b)
         yield "vi_repo_%s" % tag, lambda b=b: af.var_info_matrix(rep, bins_info=b)

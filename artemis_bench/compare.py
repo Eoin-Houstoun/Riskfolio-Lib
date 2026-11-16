@@ -30,6 +30,16 @@ def harness_digest():
     return h.hexdigest()
 
 
+WORKER_MEMORY = 4 << 30  # bytes of address space a worker may map
+
+
+def limit_worker_memory():
+    """preexec_fn for every worker: a hard address-space cap, so a runaway case fails
+    with MemoryError instead of exhausting the machine."""
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (WORKER_MEMORY, WORKER_MEMORY))
+
+
 def venv_state():
     """Fail unless this interpreter is the benchmark venv, it still matches its stored
     manifest and pinned versions (setup.sh --check), and it can be hashed in full.

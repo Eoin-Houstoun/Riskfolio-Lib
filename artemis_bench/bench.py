@@ -49,7 +49,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["MPLBACKEND"] = "Agg"
 
-from compare import compare, harness_digest, load_golden, venv_state  # noqa: E402
+from compare import compare, harness_digest, limit_worker_memory, load_golden, venv_state  # noqa: E402
 from gate import is_seed  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "bench")
@@ -84,7 +84,7 @@ def run_once(outdir):
     spawn = time.perf_counter()
     p = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "worker.py"), "hrp", outdir],
                          cwd=outdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         text=True, bufsize=1)
+                         text=True, bufsize=1, preexec_fn=limit_worker_memory)
     for line in p.stdout:
         if line.strip() == "ARTEMIS_READY":
             break
