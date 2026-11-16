@@ -92,8 +92,9 @@ def compare(name, golden, out_dir):
         fails.append("%s: type, dtype or labels changed (%r, seed %r)" % (name, m1, m0))
     if len(a1) != len(a0):
         return fails + ["%s: %d outputs, seed %d" % (name, len(a1), len(a0))]
-    atol = WEIGHT_ATOL if name.startswith(("hrp", "herc", "nco")) else MATRIX_ATOL
+    weights_case = name.startswith(("hrp", "herc", "nco"))
     for k, (x, y) in enumerate(zip(a1, a0)):
+        atol = WEIGHT_ATOL if weights_case and k == 0 else MATRIX_ATOL  # weights, then matrices
         if x.shape != y.shape:
             fails.append("%s[%d]: shape %s, seed %s" % (name, k, x.shape, y.shape))
         elif not np.array_equal(np.isnan(x), np.isnan(y)):

@@ -136,7 +136,10 @@ def main():
             total, call, ratio = run_once(out)
             if record:
                 shutil.rmtree(GOLDEN, ignore_errors=True)
-                shutil.copytree(out, GOLDEN)
+                os.makedirs(GOLDEN)
+                for f in os.listdir(out):
+                    if f.startswith("hrp."):  # not the caches the child writes into its HOME
+                        shutil.copy(os.path.join(out, f), GOLDEN)
                 continue
             fails = compare("hrp", golden, out)
             if fails:

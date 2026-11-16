@@ -8,7 +8,7 @@ process; this parent compares the outputs with golden data recorded from the
 unmodified Riskfolio-Lib 344b899 (7.4.1): mutual-information and
 variation-of-information matrices for every binning rule, both normalisations,
 DataFrame and ndarray input, tied values and two assets, plus HRP, HERC and NCO
-weights that use them. Then it runs the repository's own hierarchical tests.
+weights that use them.
 A missing output or a crash fails.
 """
 import hashlib
@@ -30,7 +30,6 @@ SEED_SHA256 = {
     "riskfolio/src/AuxFunctions.py": "6be25897d065f81c0532167d25fa66f97642266c7da519aae7a1184f6f9cb71f",
     "riskfolio/src/HCPortfolio.py": "5b6a1ac4cbef5e3ef6d1aa7c13353e5d9121b5cbc863f91a4f835f3dafe3791f",
 }
-REPO_TESTS = ["tests/test_portfolio.py", "-k", "hc_", "-q", "-p", "no:cacheprovider"]
 
 
 def is_seed():
@@ -82,11 +81,11 @@ def main():
             return 1
     finally:
         shutil.rmtree(out, ignore_errors=True)
-    t = subprocess.run([sys.executable, "-m", "pytest", *REPO_TESTS], cwd=ROOT,
-                       capture_output=True, text=True, timeout=1800,
-                       env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", MPLBACKEND="Agg"))
-    print("repo tests:", (t.stdout.strip().splitlines() or ["no output"])[-1])
-    return 0 if t.returncode == 0 else 1
+    # The repo's own hc_ tests are not run: on the seed with these pins they fail before reaching
+    # this code (test_hc_hrp_optimization loops over every risk measure, and EVaR raises
+    # UnboundLocalError in RiskFunctions.py without an exponential-cone solver). The cases above
+    # cover HRP, HERC and NCO with mutual information directly.
+    return 0
 
 
 if __name__ == "__main__":

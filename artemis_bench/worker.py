@@ -49,10 +49,13 @@ def repo_returns():
     return px.pct_change().dropna()
 
 
-def hc_weights(Y, model, rm, **kw):
+def hc_weights(Y, model, rm, with_codep=False, **kw):
     port = rp.HCPortfolio(returns=Y)
-    return port.optimization(model=model, codependence="mutual_info", rm=rm, rf=0,
-                             linkage="single", max_k=10, leaf_order=True, **kw)
+    w = port.optimization(model=model, codependence="mutual_info", rm=rm, rf=0,
+                          linkage="single", max_k=10, leaf_order=True, **kw)
+    # The call also computes and keeps the mutual-information matrix (port.codep), which the
+    # weights alone don't reveal; the benchmark checks both.
+    return (w, port.codep) if with_codep else w
 
 
 def gate_cases():
@@ -114,9 +117,9 @@ def main():
     Y = synthetic()
     print("ARTEMIS_READY", flush=True)
     nonce = sys.stdin.readline().strip()
-    w = hc_weights(Y, "HRP", "MV")
+    result = hc_weights(Y, "HRP", "MV", with_codep=True)
     print("ARTEMIS_DONE " + nonce, flush=True)
-    save(outdir, "hrp", w)
+    save(outdir, "hrp", result)
     return 0
 
 
