@@ -49,7 +49,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 os.environ["MPLBACKEND"] = "Agg"
 
-from compare import compare, harness_digest, load_golden, venv_manifest  # noqa: E402
+from compare import compare, harness_digest, load_golden, venv_state  # noqa: E402
 from gate import is_seed  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "bench")
@@ -122,7 +122,7 @@ def main():
         sys.exit("bench --record: riskfolio/src is not the seed; refusing")
 
     before = repo_files()
-    digest, venv = harness_digest(), venv_manifest()
+    digest, venv = harness_digest(), venv_state()
     golden = None if record else load_golden(GOLDEN)
     rng = np.random.default_rng(20261116)
     canary_m = rng.standard_normal((700, 700))
@@ -162,7 +162,7 @@ def main():
         return 0
     if harness_digest() != digest:
         sys.exit("bench: the harness or its golden data changed during the run")
-    if venv_manifest() != venv:
+    if venv_state() != venv:
         sys.exit("bench: the benchmark venv changed during the run")
     new = repo_files() - before - {os.path.join(ROOT, "artemis_results.json")}
     if new:

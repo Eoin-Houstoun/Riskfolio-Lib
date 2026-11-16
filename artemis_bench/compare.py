@@ -30,11 +30,24 @@ def harness_digest():
     return h.hexdigest()
 
 
-def venv_manifest():
-    """The venv's content hash (files and symlinks), from system tools only (setup.sh --manifest)."""
-    r = subprocess.run(["sh", os.path.join(HERE, "setup.sh"), "--manifest"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else "unreadable: " + r.stderr.strip()[-200:]
+def venv_state():
+    """Fail unless this interpreter is the benchmark venv, it still matches its stored
+    manifest and pinned versions (setup.sh --check), and it can be hashed in full.
+    Returns the content hash, which callers compare before and after a run."""
+    import sys
+    want = os.path.realpath(os.environ.get("RF_BENCH_VENV") or
+                            os.path.expanduser("~/.venvs/riskfolio-hrp-bench"))
+    if os.path.realpath(sys.prefix) != want:
+        sys.exit("harness: running under %s, not the benchmark venv %s" % (sys.prefix, want))
+    setup = os.path.join(HERE, "setup.sh")
+    chk = subprocess.run(["sh", setup, "--check"], capture_output=True, text=True)
+    if chk.returncode != 0:
+        sys.exit("harness: venv check failed: %s" % (chk.stdout + chk.stderr).strip()[-300:])
+    man = subprocess.run(["sh", setup, "--manifest"], capture_output=True, text=True)
+    if man.returncode != 0 or len(man.stdout.strip()) != 64:
+        sys.exit("harness: venv could not be hashed: %s" % man.stderr.strip()[-300:])
+    return man.stdout.strip()
+
 
 MATRIX_ATOL = 1.5e-8   # one unit in the 8th decimal the seed rounds to
 WEIGHT_ATOL = 1e-9

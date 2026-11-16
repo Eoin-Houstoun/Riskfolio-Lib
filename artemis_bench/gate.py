@@ -23,7 +23,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
-from compare import compare, harness_digest, load_golden, venv_manifest  # noqa: E402
+from compare import compare, harness_digest, load_golden, venv_state  # noqa: E402
 
 GOLDEN = os.path.join(HERE, "golden", "gate")
 SEED_SHA256 = {
@@ -51,7 +51,7 @@ def run_worker(outdir):
 
 def main():
     record = "--record" in sys.argv
-    digest, venv = harness_digest(), venv_manifest()
+    digest, venv = harness_digest(), venv_state()
     golden = None if record else load_golden(GOLDEN)
     out = tempfile.mkdtemp(prefix="rfgate-")
     try:
@@ -72,7 +72,7 @@ def main():
             fails += compare(name, golden, out)
         if harness_digest() != digest:
             fails.append("the harness or its golden data changed during the run")
-        if venv_manifest() != venv:
+        if venv_state() != venv:
             fails.append("the benchmark venv changed during the run")
         for f in fails:
             print("FAIL", f, file=sys.stderr)

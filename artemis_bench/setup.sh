@@ -18,17 +18,28 @@ astropy==8.0.2 astropy-iers-data==0.2026.10.19.0.52.1 matplotlib==3.11.2 pybind1
 setuptools==84.2.1 pytest==9.2.0"
 
 manifest() {
-    # content hash of every file, plus every symlink and its target, under the venv (minus the
-    # manifest itself); POSIX tools only, never the venv's own interpreter
-    (cd "$VENV" && {
-        find . -path ./.manifest -prune -o -type f -exec sha256sum {} +
-        find . -type l -exec sh -c 'for l; do printf "L %s -> %s\n" "$l" "$(readlink "$l")"; done' _ {} +
-    } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
+    # Hash of every entry's type, mode and path, every file's content, and every symlink's
+    # target under the venv (minus the manifest itself). POSIX tools only, never the venv's
+    # own interpreter. Each step's exit status is checked (sh has no pipefail), so an
+    # unreadable file fails instead of hashing less.
+    tmp=$(mktemp -d) || return 1
+    if (cd "$VENV" \
+        && find . -mindepth 1 -path ./.manifest -prune -o -printf '%y %m %p\n' > "$tmp/ls" \
+        && find . -path ./.manifest -prune -o -type f -exec sha256sum {} + > "$tmp/files" \
+        && find . -type l -exec sh -c 'for l; do printf "L %s -> %s\n" "$l" "$(readlink "$l")"; done' _ {} + > "$tmp/links"); then
+        LC_ALL=C sort "$tmp/ls" "$tmp/files" "$tmp/links" | sha256sum | cut -d' ' -f1
+        rm -rf "$tmp"
+    else
+        rm -rf "$tmp"
+        echo "setup.sh: could not hash every file in $VENV" >&2
+        return 1
+    fi
 }
 
 check() {
     [ -f "$VENV/.manifest" ] || { echo "no manifest"; return 1; }
-    [ "$(manifest)" = "$(cat "$VENV/.manifest")" ] || { echo "venv changed since setup (manifest mismatch)"; return 1; }
+    now=$(manifest) || { echo "venv could not be hashed"; return 1; }
+    [ "$now" = "$(cat "$VENV/.manifest")" ] || { echo "venv changed since setup (manifest mismatch)"; return 1; }
     "$VENV/bin/python" -I - <<'EOF'
 import sys, numpy, scipy, pandas, astropy, sklearn
 want = {"python": "3.12", "numpy": "2.2.6", "scipy": "1.15.3", "pandas": "2.2.3",
@@ -46,7 +57,7 @@ EOF
 if [ "${1:-}" = "--manifest" ]; then
     # gate.py and bench.py record this before a run and compare it after
     manifest
-    exit 0
+    exit $?
 fi
 
 if [ "${1:-}" = "--check" ]; then
@@ -83,6 +94,8 @@ uv venv --quiet --python "$PY_VERSION" "$VENV"
 # shellcheck disable=SC2086
 uv pip install --quiet --python "$VENV/bin/python" $PINS
 "$VENV/bin/python" -c "import numpy, scipy, pandas, cvxpy, sklearn, statsmodels, arch, astropy.stats, networkx, matplotlib, xlsxwriter, pybind11, pytest" >/dev/null
+# Contents read-only first, then hash them, then lock the top folder and the manifest.
+find "$VENV" -mindepth 1 ! -type l -exec chmod a-w {} +  # never follow links out of the venv
 manifest > "$VENV/.manifest"
-chmod -R a-w "$VENV"
+chmod a-w "$VENV/.manifest" "$VENV"
 check
